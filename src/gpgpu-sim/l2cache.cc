@@ -437,8 +437,10 @@ void memory_partition_unit::simple_dram_model_cycle() {
           spid);
       dram_delay_t d;
       d.req = mf;
+      // dram_latency_queue
       d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                       m_config->dram_latency;
+      // 当前这一轮/当前 kernel 仿真已经执行的 cycle 数+之前已经完成的仿真累计 cycle 数+一个内存请求从 L2→DRAM 队列出来之后，在真正允许进入详细 DRAM 模型之前，需要额外经历的固定延迟
       m_dram_latency_queue.push_back(d);
       mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
