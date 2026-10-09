@@ -27,7 +27,7 @@ PTX_SIM_MODE_FUNC=0（详细性能仿真模式）这是模拟器的默认模式�
 OMP_NUM_THREADS=8 可以拿来加速用
 
 ```bash
-OMP_NUM_THREADS=8
+OMP_NUM_THREADS=8 (echo $OMP_NUM_THREADS)
 cd tutorials/vectorAdd/
 PTX_SIM_MODE_FUNC=1 ./run.sh
 ```
