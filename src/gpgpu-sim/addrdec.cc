@@ -559,6 +559,8 @@ class hash_addrdec_t {
 
 // a simple sweep test to ensure that two linear addresses are not mapped to the
 // same raw address
+// 在 GPU 模拟器中，地址映射逻辑必须保证单射性：不同的线性地址应该映射到
+// 不同的 raw address。如果发生冲突，模拟出的内存行为就会出错
 void linear_to_raw_address_translation::sweep_test() const {
   new_addr_type sweep_range = 16 * 1024 * 1024;
 
@@ -571,6 +573,7 @@ void linear_to_raw_address_translation::sweep_test() const {
 
   for (new_addr_type raw_addr = 4; raw_addr < sweep_range; raw_addr += 4) {
     addrdec_t tlx;
+    // 对地址做一次译码，把译码结果填到一个结构体里
     addrdec_tlx(raw_addr, &tlx);
 
     history_map_t::iterator h = history_map.find(tlx);
@@ -582,6 +585,7 @@ void linear_to_raw_address_translation::sweep_test() const {
           h->second, raw_addr);
       abort();
     } else {
+      // 通道号不能越界
       assert(tlx.chip < m_n_channel);
       // ensure that partition_address() returns the concatenated address
       if ((ADDR_CHIP_S != -1 and raw_addr >= (1ULL << ADDR_CHIP_S)) or
@@ -591,6 +595,7 @@ void linear_to_raw_address_translation::sweep_test() const {
       history_map[tlx] = raw_addr;
     }
 
+    // 进度条，每 65536 个打印一次
     if ((raw_addr & 0xffff) == 0) printf("%llu scaned\n", raw_addr);
   }
 }
