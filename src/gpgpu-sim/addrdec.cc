@@ -91,6 +91,43 @@ void linear_to_raw_address_translation::addrdec_setoption(option_parser_t opp) {
       "0");
 }
 
+// partition_address
+/*
+把一个内存地址里“表示要去哪个内存分区/通道”的那部分信息删掉，只留下“分区内部的位置信息”。
+
+你可以把 GPU 的内存想象成一个大仓库，里面分成了很多个小房间（分区、通道、子分区）。
+一个地址就像一张快递单，上面既有“送到哪个房间”的信息，也有“送到房间里哪个货架”的信息。
+
+这个函数 partition_address 干的就是：
+
+把“送到哪个房间”的那几个字擦掉，只留下“房间里哪个货架”的编号。
+
+具体分两种情况：
+1. 如果地址安排得很规整（!gap）
+房间编号在地址里就是连续的几个二进制位，比如第 8~10 位表示去哪个房间。
+那好办，直接拿个“橡皮擦”（掩码）把这几个位擦掉，再把剩下的位拼紧，就得到“房间内地址”了。
+
+就像：
+快递单上写着 A栋-3楼-12号，你直接把 A栋-3楼 划掉，只留 12号。
+
+2. 如果地址安排得不规整（gap 为真）
+房间数量不是 2 的幂，比如只有 3 个通道。
+这时候地址里表示通道的位不是连续的，中间会有“空洞”，不能直接擦。
+所以先做一个除法：把地址右移，除以通道数，再左移回去。
+这相当于把因为通道编号造成的“空隙”挤掉，让地址变得紧凑。
+然后再把子分区的那部分位擦掉。
+
+就像：
+快递单上不是简单的 A栋-3楼，而是 1号、3号、5号 这样跳着编号的，你得先重新排一下，把空号去掉，再擦掉楼层信息。
+
+最后返回的是什么？
+返回的并不是最终物理地址，而是一个中间地址。
+它已经去掉了“去哪个分区”的信息，只剩下分区内部的偏移。
+后面还会用这个地址去算具体是哪个分区、哪个 bank、哪一行等等。
+
+一句话总结：
+这个函数就是给地址“卸妆”，把表示内存分区/通道的位抹掉，留下分区内部的干净地址。
+*/
 new_addr_type linear_to_raw_address_translation::partition_address(
     new_addr_type addr) const {
   if (!gap) {
@@ -108,6 +145,14 @@ new_addr_type linear_to_raw_address_translation::partition_address(
   }
 }
 
+// Address Decoder Translation
+/*
+addrdec_tlx() 的作用是将 GPU 的线性内存地址解码成 DRAM 访问地址，
+并确定访存请求对应的 Memory Partition 和 L2 Subpartition。
+
+输入：GPU 线性内存地址 new_addr_type addr，例如 0x2000
+输出：addrdec_t
+*/
 void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
                                                     addrdec_t *tlx) const {
   unsigned long long int addr_for_chip, rest_of_addr, rest_of_addr_high_bits;
@@ -346,6 +391,8 @@ void linear_to_raw_address_translation::init(
     unsigned int n_channel, unsigned int n_sub_partition_in_channel) {
   unsigned i;
   unsigned long long int mask;
+  // memory channel / partition 数量
+  // 对 n_channel 向下取 log2
   unsigned int nchipbits = ::LOGB2_32(n_channel);
   log2channel = nchipbits;
   log2sub_partition = ::LOGB2_32(n_sub_partition_in_channel);
@@ -354,18 +401,52 @@ void linear_to_raw_address_translation::init(
   nextPowerOf2_m_n_channel = ::next_powerOf2(n_channel);
   m_n_sub_partition_total = n_channel * n_sub_partition_in_channel;
 
+  // powli(2, nchipbits)：计算 2 的 nchipbits 次幂
+  // :: 调用全局命名空间下的函数，避免和类内函数混淆
   gap = (n_channel - ::powli(2, nchipbits));
+  // gap == 0：n_channel 是 2 的幂
+  // gap != 0：n_channel 不是 2 的幂，gap 保存它与较小 2 次幂的差值
   if (gap) {
     nchipbits++;
+    /*
+    意思是：如果 channel 数不是 2 的幂，就把表示 channel 所需 bit 数加 1、
+    ，也就是使用向上取整的 bit 数。例如 6 个 channel 需要 3 bit 才能表示编号 0~5
+    */
   }
   switch (gpgpu_mem_address_mask) {
+    /*
+    ADDR_CHIP_S：channel/chip ID 从哪个 bit 位开始插入或切分
+    addrdec_mask[CHIP]：哪些地址 bit 表示 chip/channel
+    addrdec_mask[BK]：哪些地址 bit 表示 bank
+    addrdec_mask[ROW]：哪些地址 bit 表示 row
+    addrdec_mask[COL]：哪些地址 bit 表示 column
+    addrdec_mask[BURST]：哪些地址 bit 表示 burst
+    */
     case 0:
       // old, added 2row bits, use #define ADDR_CHIP_S 10
       ADDR_CHIP_S = 10;
       addrdec_mask[CHIP] = 0x0000000000000000;
-      addrdec_mask[BK] = 0x0000000000000300;
-      addrdec_mask[ROW] = 0x0000000007FFE000;
+      /*
+      这不表示没有 chip。
+      而是 case 0 不固定 chip 占用哪些 bit，chip mask 是后面根据 channel 数量动态生成的。
+      大致流程是：
+      先设置 ADDR_CHIP_S = 10
+      如果 channel 数是 2 的幂，就把 chip bits 插入到 bit10 开始的位置
+      原来的 BK/ROW/COL 中高于 bit10 的部分会相应左移，给 chip 让位
+      */
+      addrdec_mask[BK] = 0x0000000000000300; //bits 8~9,一共 2 个 bit，对应4 个 bank
+      addrdec_mask[ROW] = 0x0000000007FFE000; 
+      //bits 13~30,所以 row 使用 18 个 bit
+      // 2^18 = 262144 个 row
       addrdec_mask[COL] = 0x0000000000001CFF;
+      // 0x00FF -> bits 0~7
+      // 0x1C00 -> bits 10~12
+      /*
+      所以 column 分成两段：
+      col 低位：bits 0~7
+      col 高位：bits 10~12
+      总共 11 个 column bit
+      */
       break;
     case 1:
       ADDR_CHIP_S = 13;
@@ -452,6 +533,14 @@ void linear_to_raw_address_translation::init(
       addrdec_mask[BK] = 0x0000000000000300;
       addrdec_mask[ROW] = 0x0000000007FFE000;
       addrdec_mask[COL] = 0x0000000000001CFF;
+      /*
+      不同 case 的区别主要是：
+      chip 从哪个 bit 开始
+      bank 用哪些 bit
+      row 用哪些 bit
+      column 用哪些 bit
+      是否适合某种 DRAM 组织方式
+      */
 
     default:
       break;
@@ -660,6 +749,14 @@ unsigned next_powerOf2(unsigned n) {
   return n << 1;
 }
 
+/*
+addrdec_packbits() 的作用是：按照 mask 指定的 bit 位，
+从 val 中抽取这些 bit，并把它们压缩成从 bit0 开始的连续整数
+
+val    11001011
+mask   10110110
+result 10001
+*/
 static new_addr_type addrdec_packbits(new_addr_type mask, new_addr_type val,
                                       unsigned char high, unsigned char low) {
   unsigned pos = 0;

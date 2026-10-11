@@ -45,16 +45,29 @@ enum partition_index_function {
   CUSTOM
 };
 
+// addrdec_t 的作用是保存 GPU 内存请求的地址解码结果，让模拟器知道这个请求应该送到哪个
+//  Memory Partition、哪个 L2 Subpartition，以及目标 DRAM 的哪个 Bank、Row、Column。
 struct addrdec_t {
   void print(FILE *fp) const;
 
-  unsigned chip;
+  unsigned chip; 
+  // 含义： Memory Partition / DRAM Channel ID	
+  // 作用：选择访存请求发送到哪个内存分区
   unsigned bk;
+  // 含义：DRAM Bank ID
+  // 作用：确定要访问的 DRAM Bank
   unsigned row;
+  // 含义：DRAM Row
+  // 作用：确定目标 Bank 中的行
   unsigned col;
+  // 含义：DRAM Column
+  // 作用：确定行内的列地址
   unsigned burst;
-
+  // 含义：Burst 地址信息
+  // 作用：描述突发访问对应的地址低位信息
   unsigned sub_partition;
+  // 含义：L2 Subpartition ID
+  // 作用：确定请求对应的 L2 子分区
 };
 
 class linear_to_raw_address_translation {
