@@ -28,7 +28,10 @@ cp -a tests/build/bin/microbench/memory/. \tests/run/microbench_memory/
 
 cd tests/run/microbench_memory
 
+ls一下，会发现里面有编译完成后的文件如l2_partition_latency_probe_cuda128_sm_90a
+
 # 运行最小规模测试：
+加速：OMP_NUM_THREADS=8
 --warmup-steps=2048 可能太大了，要运行很久
 
 ./l2_latency_bench_cuda128_sm_90a \

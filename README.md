@@ -31,3 +31,7 @@ OMP_NUM_THREADS=8 (echo $OMP_NUM_THREADS)
 cd tutorials/vectorAdd/
 PTX_SIM_MODE_FUNC=1 ./run.sh
 ```
+
+## 关键的测试代码
+
+FlashGPU_Sim_Baseline/tests/src/microbench/memory 这里面的代码还比较重要的
