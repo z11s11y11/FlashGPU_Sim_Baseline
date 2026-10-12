@@ -1,7 +1,14 @@
+# 这个文件是一个 Makefile，用于编译和运行几个与 GPU 内存带宽、L2 延迟、HBM 交织、
+# L2 分区延迟相关的 CUDA 基准测试程序。它定义了一系列变量、编译规则和运行目标，
+# 方便一键构建和测试。
 BW_SRC := global_load_bw_bench.cu
+# `:=` 即时赋值 解析 Makefile 时**立刻展开右侧变量**，赋值后存入变量，后续不再重新计算。
 BW_TARGET_NAME ?= global_load_bw_bench_cuda129
+# `?=` 条件赋值：变量未定义才赋值；
 LAT_SRC := l2_latency_bench.cu
 LAT_TARGET_NAME ?= l2_latency_bench_cuda128_$(ARCH)
+# - **解析这一行时不会去替换 `$(ARCH)`**；
+# - 只有后面真正用到 `$(LAT_TARGET_NAME)` 时，才会一次性展开里面的 `$(ARCH)`。
 INTERLEAVE_SRC := l2_hbm_interleave_bench.cu
 INTERLEAVE_TARGET_NAME ?= l2_hbm_interleave_bench_cuda128_$(ARCH)
 L2PART_SRC := l2_partition_latency_probe.cu

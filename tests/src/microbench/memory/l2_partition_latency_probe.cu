@@ -1,3 +1,19 @@
+/*
+这个文件是一个针对 L2 分区（L2 partition / slice）行为的延迟探测微
+基准，用途是标定/验证 FlashGPU-Sim 里 L2 切片划分和地址散列（hash）的建模是否正确。
+
+核心思想：让每个 SM 上的线程对一批精心挑选的地址偏移做串行指针追逐（pointer chase），
+用 clock64() 计时，得到一张 (SM, 地址偏移) → 访问延迟 的表。如果 GPU 的 L2 
+是按地址哈希分成多个 slice/partition 的，不同偏移的地址会落到不同 slice，从某个 SM 
+出发到"近 slice"和"远 slice"的延迟就会不同——从这张表就能反推出哈希函数用了哪些地址位、
+每个 SM 到各 slice 的远近关系。
+
+仓库是个 GPU 模拟器（FlashGPU-Sim）。模拟器必须自己实现那套哈希规则，但真芯片的规则
+是不公开的。所以作者的思路是：先在真 GPU 上跑这个探测程序拿到真实延迟图，再让模拟器跑
+同样的程序——两边图对上了，说明模拟器的 L2 建模是对的。这类程序叫"校准微基准"（
+calibration microbenchmark），本身不产生有用计算结果，纯粹是给模拟器当"标尺"用。
+*/
+
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -14,11 +30,11 @@
 namespace {
 
 struct Options {
-  int device = 0;
+  int device = 0; //CUDA 设备号
   int blocks = 0;
   int threads = 32;
   int repeats = 256;
-  int warmup = 64;
+  int warmup = 64; //	计时前先空跑 64 次追逐，让流水线、TLB、缓存进入稳态，不计入结果
   int bit_first = 7;
   int bit_last = 30;
   int dense_offsets = 256;
@@ -51,7 +67,15 @@ struct Sample {
 
 __device__ __forceinline__ uint32_t smid_now() {
   uint32_t value = 0;
+  /*
+    %%smid 是 PTX 的一个特殊只读寄存器（special register），
+    硬件在每次发射 warp 时会把该 warp 所在 SM 的编号写进去；
+    mov.u32 %0, %%smid 就是"把这个 SM 编号读到普通寄存器里"；
+    asm volatile 告诉编译器不许优化掉这次读取（否则结果没人用就可能被删）；
+  */
   asm volatile("mov.u32 %0, %%smid;" : "=r"(value));
+  // mov.u32 %0, %%smid; 里的 %0 最终会被替换成编译器给 value 选的寄存器名（比如 %r1）
+  // %0：在汇编模板字符串里，%0、%1…是按操作数列表顺序编号的占位符
   return value;
 }
 
@@ -63,11 +87,26 @@ __device__ __forceinline__ uint64_t clock64_now() {
 
 __device__ __forceinline__ uint64_t gmem_addr_u64(const void* ptr) {
   uint64_t out = 0;
+  // cvta.to.global.u64 %0, %1;"：核心 PTX 指令：
   asm volatile("cvta.to.global.u64 %0, %1;" : "=l"(out) : "l"(ptr));
+  /*
+  cvta：convert address，地址转换。
+  .to.global：转换到全局内存状态空间。
+  .u64：操作数为 64 位无符号整数。
+  %0：输出操作数，即 out。
+  %1：输入操作数，即 ptr
+  */
+
   return out;
 }
 
+// 这段代码定义了一个 CUDA 设备端强制内联函数，用途是用内联 PTX 汇编
+// 从 全局内存 加载一个 64 位无符号整数，并指定缓存策略为 .cg
+
+// uint64_t addr：传入一个 64 位地址。通常这是某个全局内存地址；
 __device__ __forceinline__ uint64_t ld_global_cg_u64(uint64_t addr) {
+
+  // uint64_t value = 0;：输出变量，后面的汇编会把加载结果写入它。
   uint64_t value = 0;
   asm volatile("ld.global.cg.u64 %0, [%1];\n"
                : "=l"(value)
@@ -85,11 +124,20 @@ __global__ void init_self_pointer_kernel(uint8_t* data,
   *reinterpret_cast<uint64_t*>(data + offsets[idx]) = addr;
 }
 
+// 比较关键的一个函数 l2_partition_latency_kernel
+/*
+不只是测量一次 GPU 内存访问需要多少时间，而是想通过改变内存访问地址，
+观察不同地址是否映射到不同的 L2 Partition，以及这些分区的访问延迟是否存在差异
+
+最理想的验证方法就是：先在真实 GPU 上运行微基准测试，再在 FlashGPU-Sim 中运行相同的测试，
+最后比较两者的结果。
+*/
 __global__ void l2_partition_latency_kernel(const uint8_t* data,
                                             const uint64_t* offsets,
                                             int num_offsets, int repeats,
                                             int warmup, Sample* samples) {
   const int tid = threadIdx.x;
+  // 读取当前线程运行在哪个 SM（流多处理器）上，返回那个 SM 的编号。
   const uint32_t smid = smid_now();
 
   for (int logical = 0; logical < num_offsets; ++logical) {
@@ -107,11 +155,28 @@ __global__ void l2_partition_latency_kernel(const uint8_t* data,
         ptr = ld_global_cg_u64(ptr);
       }
       const uint64_t end = clock64_now();
+      // load 的结果 ptr 必须被后续写回使用，计时循环才不会被当成无副作用代码删掉
       sink ^= ptr;
 
+      /*
+      out_idx
+      把二维下标 (blockIdx.x, offset_idx) 线性化成一维：
+      out_idx = block * num_offsets + offset_idx
+      */
       const size_t out_idx =
           static_cast<size_t>(blockIdx.x) * static_cast<size_t>(num_offsets) +
           static_cast<size_t>(offset_idx);
+
+      /*
+      {
+        blockIdx.x,   // block：第几个 CTA
+        smid,         // 当前 SM 编号，来自 PTX %smid
+        offset_idx,   // 在 offsets 数组中的下标
+        offset,       // 相对 data 基址的字节偏移
+        end - start,  // repeats 次 pointer-chase load 的总周期数
+        sink          // 上面的依赖/校验值
+      }
+      */
       samples[out_idx] = {static_cast<uint32_t>(blockIdx.x), smid,
                           static_cast<uint32_t>(offset_idx), offset,
                           end - start, sink};
