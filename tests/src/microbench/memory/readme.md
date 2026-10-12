@@ -1,9 +1,12 @@
 ## 运行这些测试文件的代码
 
+首先需要运行FlashGPU_Sim文件夹下面的readme，把模拟器的环境配置起来
+
 # 可以直接使用该目录现成的 Makefile：
 
 cd ~/FlashGPU_Sim_Baseline
 
+<!--编译memory 里面的4个cuda文件 -->
 make -C tests/src/microbench/memory \
     ARCH=sm_90a \
     PTX_PROFILE=compute_90a \
@@ -11,19 +14,19 @@ make -C tests/src/microbench/memory \
 
 
 # 编译完成后检查：
-ls -lh tests/build/bin/microbench/memory/l2_latency_bench_cuda128_sm_90a
+检查编译好的可执行文件是不是都出来了
+ls -lh tests/build/bin/microbench/memory
 
 # 然后配置 H100 模拟环境：
 source setup_environment
 
-mkdir -p tests/run/l2_latency_h100
+mkdir -p tests/run/microbench_memory
 
-cp configs/SM90_H100/* tests/run/l2_latency_h100/
+cp -a configs/SM90_H100/. tests/run/microbench_memory/
 
-cp tests/build/bin/microbench/memory/l2_latency_bench_cuda128_sm_90a \
-   tests/run/l2_latency_h100/
+cp -a tests/build/bin/microbench/memory/. \tests/run/microbench_memory/
 
-cd tests/run/l2_latency_h100
+cd tests/run/microbench_memory
 
 # 运行最小规模测试：
 --warmup-steps=2048 可能太大了，要运行很久
@@ -35,6 +38,32 @@ cd tests/run/l2_latency_h100
     --samples=8 \
     --warmup-steps=2 \
     --cache-op=cg >/home/zhangshuyi/FlashGPU_Sim_Baseline/tests/src/microbench/memory/reslut.log
+
+<!-- 
+  --blocks=84 \ CTA 个数
+  --threads=32 \ 每 block 线程数
+  --repeats=256 \
+  --warmup=64 \
+  --bit-first=7 \
+  --bit-last=27 \
+  --dense-offsets=64 \
+  --dense-stride=128 \
+  --data-bytes=256M \
+  --csv=sim_results.csv \
+-->
+
+L2 Partition部分
+./l2_partition_latency_probe_cuda128_sm_90a \
+  --blocks=4 \
+  --threads=32 \
+  --repeats=32 \
+  --warmup=8 \
+  --bit-first=7 \
+  --bit-last=12 \
+  --dense-offsets=8 \
+  --data-bytes=4M \
+  --csv=sim_results.csv \
+  2>&1 | tee sim_run.log
 
 
 
@@ -60,6 +89,8 @@ grep -R -n "l2_partition_latency_probe" tests/
 # 第二步：确认本机有可用的 NVIDIA GPU 和 CUDA 编译器
 
 ```
+如果没有环境的话需要export一下路径
+export PATH=$PATH:/usr/local/cuda/bin
 nvidia-smi
 nvcc --version
 ```
@@ -69,30 +100,29 @@ nvcc --version
 ```
 cd /home/zhangshuyi/FlashGPU_Sim_Baseline
 
-mkdir -p tests/run/memory_probe
+mkdir -p tests/run/memory_RealGPU
 
 nvcc -O2 -std=c++17 \
   tests/src/microbench/memory/l2_partition_latency_probe.cu \
-  -o tests/run/memory_probe/l2_partition_latency_probe
+  -o tests/run/memory_RealGPU/l2_partition_latency_probe
 ```
 
-如果编译成功，执行文件就会生成在：tests/run/memory_probe/l2_partition_latency_probe
+如果编译成功，执行文件就会生成在：tests/run/memory_RealGPU/l2_partition_latency_probe
 
 # 第四步：运行并保存测量结果
 
 ```
 cd /home/zhangshuyi/FlashGPU_Sim_Baseline
 
-./tests/run/memory_probe/l2_partition_latency_probe \
-  --blocks=0 \
+./tests/run/memory_RealGPU/l2_partition_latency_probe \
+  --blocks=4 \
   --threads=32 \
-  --repeats=256 \
-  --warmup=64 \
+  --repeats=32 \
+  --warmup=8 \
   --bit-first=7 \
-  --bit-last=27 \
-  --dense-offsets=64 \
-  --dense-stride=128 \
-  --data-bytes=256M \
-  --csv=tests/run/memory_probe/results.csv \
-  2>&1 | tee tests/run/memory_probe/run.log
+  --bit-last=17 \
+  --dense-offsets=8 \
+  --data-bytes=4M \
+  --csv=tests/run/memory_RealGPU/results.csv \
+  2>&1 | tee tests/run/memory_RealGPU/run.log
 ```
