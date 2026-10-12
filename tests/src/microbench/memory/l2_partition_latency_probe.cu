@@ -148,6 +148,7 @@ __global__ void l2_partition_latency_kernel(const uint8_t* data,
 
     if (tid == 0) {
       for (int i = 0; i < warmup; ++i) {
+        // .cg 表示主要走 global/L2 缓存路径，尽量避免 L1 命中干扰测量
         ptr = ld_global_cg_u64(ptr);
       }
       const uint64_t start = clock64_now();
