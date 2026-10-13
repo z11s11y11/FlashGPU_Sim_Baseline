@@ -7,17 +7,21 @@
 cd ~/FlashGPU_Sim_Baseline
 
 <!--编译memory 里面的4个cuda文件 -->
+```
 make -C tests/src/microbench/memory \
     ARCH=sm_90a \
     PTX_PROFILE=compute_90a \
     all
-
+```
 
 # 编译完成后检查：
 检查编译好的可执行文件是不是都出来了
+
 ls -lh tests/build/bin/microbench/memory
 
 # 然后配置 H100 模拟环境：
+
+```
 source setup_environment
 
 mkdir -p tests/run/microbench_memory
@@ -27,6 +31,7 @@ cp -a configs/SM90_H100/. tests/run/microbench_memory/
 cp -a tests/build/bin/microbench/memory/. \tests/run/microbench_memory/
 
 cd tests/run/microbench_memory
+```
 
 ls一下，会发现里面有编译完成后的文件如l2_partition_latency_probe_cuda128_sm_90a
 
@@ -56,6 +61,7 @@ ls一下，会发现里面有编译完成后的文件如l2_partition_latency_pro
 -->
 
 L2 Partition部分
+```
 ./l2_partition_latency_probe_cuda128_sm_90a \
   --blocks=4 \
   --threads=32 \
@@ -67,7 +73,7 @@ L2 Partition部分
   --data-bytes=4M \
   --csv=sim_results.csv \
   2>&1 | tee sim_run.log
-
+```
 
 
 ## 在真机上测量
@@ -110,7 +116,9 @@ nvcc -O2 -std=c++17 \
   -o tests/run/memory_RealGPU/l2_partition_latency_probe
 ```
 
-如果编译成功，执行文件就会生成在：tests/run/memory_RealGPU/l2_partition_latency_probe
+如果编译成功，执行文件就会生成在：
+
+tests/run/memory_RealGPU/l2_partition_latency_probe
 
 # 第四步：运行并保存测量结果
 

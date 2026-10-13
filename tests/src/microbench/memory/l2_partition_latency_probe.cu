@@ -332,6 +332,7 @@ void print_summary(const std::vector<Sample>& samples, int repeats,
   uint64_t min_cycles = UINT64_MAX;
   uint64_t max_cycles = 0;
   for (const Sample& s : samples) {
+    // 样本累加
     total += static_cast<double>(s.cycles);
     min_cycles = std::min(min_cycles, s.cycles);
     max_cycles = std::max(max_cycles, s.cycles);
