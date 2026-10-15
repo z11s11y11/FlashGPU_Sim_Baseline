@@ -223,13 +223,21 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
                                              const memory_config *config,
                                              memory_stats_manager_t *stats,
                                              class gpgpu_sim *gpu)
-    : m_id(partition_id),
-      m_config(config),
-      m_mem_stats(stats),
-      m_arbitration_metadata(config),
-      m_gpu(gpu) {
+    : : m_id(partition_id),              // 本 partition 编号（= DRAM channel 号，与内部
+                                   // dram_t::id 一致；0 ~ gpgpu_n_mem-1）
+      m_config(config),            // 全局内存配置指针（memory_config：DRAM 时序、
+                                   // L2 参数、地址映射等，源自 gpgpusim.config；
+                                   // 生命周期由 gpgpu_sim_config 管理，本类不拥有）
+      m_mem_stats(stats),          // 访存延迟统计管理器指针（最终输出到统计文件）
+      m_arbitration_metadata(config),  // 互连仲裁元数据（按 config 里的 subpartition
+                                   // 数初始化；icnt 仲裁时用来判断各 subpartition 的
+                                   // 队列状态，决定哪个 subpartition 获得互连通道）
+      m_gpu(gpu)                   // 所属 GPU 指针：本类多处使用——取全局周期做
+                                   // 时间戳、经 icnt 发送 L2 回填响应等；
+                                   // 与 dram_t::m_gpu 同类的耦合点，解耦时一并处理
+                                    {
   m_dram = new dram_t(m_id, m_config, stats, this, gpu);
-
+// 上层在构造下层的瞬间把 this 递过去，等于说："这是我家的地址，以后有事打这个电话。"这就是之前说的反向关联指针的出处。
   m_sub_partition = new memory_sub_partition
       *[m_config->m_n_sub_partition_per_memory_channel];
   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
