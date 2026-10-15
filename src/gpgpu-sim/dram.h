@@ -57,19 +57,19 @@ class dram_req_t {
   dram_req_t(class mem_fetch *data, unsigned banks,
              unsigned dram_bnk_indexing_policy, class gpgpu_sim *gpu);
 
-  unsigned int row;
-  unsigned int col;
-  unsigned int bk;
-  unsigned int nbytes;
-  unsigned int txbytes;
-  unsigned int dqbytes;
-  unsigned int age;
-  unsigned int timestamp;
-  unsigned char rw;  // is the request a read or a write?
-  unsigned long long int addr;
-  unsigned int insertion_time;
-  class mem_fetch *data;
-  class gpgpu_sim *m_gpu;
+  unsigned int row;             // 目标行地址：请求要访问的 DRAM row（页），ACT 命令打开的对象
+  unsigned int col;             // 列地址：row 内的起始 burst 位置，RD/WR 命令的寻址字段
+  unsigned int bk;              // bank 编号：请求落在本 channel 内 16 个 bank 中的哪一个
+  unsigned int nbytes;          // 待传输总字节数：本次请求需要搬完的数据量（= access size）
+  unsigned int txbytes;         // 已传输字节数：每完成一个 burst 累加 atom_size，达到 nbytes 即服务完成
+  unsigned int dqbytes;         // 本周期数据总线已占用字节数：统计/限流用，防止一个周期超额占线
+  unsigned int age;             // 请求年龄：每周期 +1，调度器用来识别"等太久"的请求（防饿死）
+  unsigned int timestamp;       // 进入 DRAM 的时刻（全局周期）：算 queuing latency 的起点
+  unsigned char rw;             // 读写标志：1 = 读请求（要返回数据），0 = 写请求
+  unsigned long long int addr;  // 原始物理地址：请求的完整地址，用于统计与调试回溯
+  unsigned int insertion_time;  // 入队时刻：进入 mrqq/调度队列的周期，算调度等待时间
+  class mem_fetch *data;        // 原始请求指针：关联的 mem_fetch（含 SM 来源、TLB 等信息）
+  class gpgpu_sim *m_gpu;       // 所属 GPU 指针：目前仅用于取全局周期，解耦时应移除
 };
 
 struct bankgrp_t {
@@ -133,13 +133,28 @@ class dram_t {
   class mem_fetch *return_queue_pop();
   class mem_fetch *return_queue_top();
 
-  void push(class mem_fetch *data);
-  void cycle();
-  void dram_log(int task);
+  // ============ 对外接口（仿真循环每周期驱动 / 上游调用） ============
+  void push(class mem_fetch *data);   // 请求入口：接收经 L2 miss 后到达本 channel 的访存请求，
+                                      // 内部创建 dram_req_t 并入 mrqq（注意 class 关键字是
+                                      // mem_fetch 的前置声明写法，本头文件不 include mem_fetch.h）
+  void cycle();                       // 时序推进：每仿真周期调用一次，驱动 bank 计数器递减
+                                      // （DEC2ZERO）、尝试发射行/列命令、推进 rwq 传输、
+                                      // 把完成的读请求放入 returnq、写回请求直接 set_done
+  void dram_log(int task);            // 调试日志：受 DYNAMIC_LOG 宏控制的 printf 开关，
+                                      // task 区分要打印哪类信息（命令、队列状态等），
+                                      // 正常仿真为空操作
 
-  class memory_partition_unit *m_memory_partition_unit;
-  class gpgpu_sim *m_gpu;
-  unsigned int id;
+  // ============ 反向关联指针（解耦改造的主要对象） ============
+  class memory_partition_unit *m_memory_partition_unit;  // 所属 memory partition（上游 L2），
+                                      // 目前仅用于写回时回调 set_done() 和取 gpu 指针——
+                                      // 改造成方案 A/B 后应删除（改由回调接口或 returnq 承担）
+  class gpgpu_sim *m_gpu;             // 所属 GPU 指针：全类唯一用途是取全局周期
+                                      // （gpu_sim_cycle + gpu_tot_sim_cycle）做时间戳，
+                                      // 是 IClock 抽象要替换掉的耦合点
+  unsigned int id;                    // 本 DRAM channel 的编号（= memory partition 编号），
+                                      // 由 gpgpu_sim 创建时传入（0 ~ gpgpu_n_mem-1），
+                                      // push() 里的 assert(id == tlx.chip) 用它校验
+                                      // 请求确实被地址解码路由到了正确的 channel
 
   // Power Model
   void set_dram_power_stats(unsigned &cmd, unsigned &activity, unsigned &nop,
@@ -162,100 +177,123 @@ class dram_t {
   bool issue_col_command(int j);
   bool issue_row_command(int j);
 
-  unsigned int RRDc;
-  unsigned int CCDc;
-  unsigned int RTWc;  // read to write penalty applies across banks
-  unsigned int WTRc;  // write to read penalty applies across banks
+  // ============ DRAM 时序约束计数器（每周期 DEC2ZERO 递减，非零即封锁对应命令） ============
+  unsigned int RRDc;        // tRRD 计数器：两个 ACT（行激活）命令之间的最小间隔
+  unsigned int CCDc;        // tCCD 计数器：两条列命令（RD/WR）之间的最小间隔
+  unsigned int RTWc;        // read to write penalty applies across banks
+                            // tRTW 计数器：读→写总线转向惩罚（channel 级，跨 bank 共享）
+  unsigned int WTRc;        // write to read penalty applies across banks
+                            // tWTR 计数器：写→读总线转向惩罚（channel 级，跨 bank 共享）
 
   unsigned char
-      rw;  // was last request a read or write? (important for RTW, WTR)
+      rw;                   // was last request a read or write? (important for RTW, WTR)
+                            // 总线方向记录：最近一次列命令是读(1)还是写(0)，
+                            // 发射反向命令时用于判断/触发 RTWc、WTRc 计数器装载
 
-  unsigned int pending_writes;
+  unsigned int pending_writes;  // 等待中的写请求数（进入 WRITE_MODE 排水的判断依据之一）
 
-  fifo_pipeline<dram_req_t> *rwq;
-  fifo_pipeline<dram_req_t> *mrqq;
+  // ============ 核心数据队列 ============
+  fifo_pipeline<dram_req_t> *rwq;   // 数据总线队列：已发 RD/WR 命令在此等待固定延迟
+                                    // （min_len = CL），模拟 burst 在总线上的传输耗时，
+                                    // 弹出时累加 txbytes，传完进入 returnq
+  fifo_pipeline<dram_req_t> *mrqq;  // MC 入口队列：push() 放入的新请求先在此排队，
+                                    // 深度仅 2，随后被调度器（FIFO/FR-FCFS）取走分发到各 bank
   // buffer to hold packets when DRAM processing is over
   // should be filled with dram clock and popped with l2or icnt clock
-  fifo_pipeline<mem_fetch> *returnq;
+  fifo_pipeline<mem_fetch> *returnq;  // 返回队列：读请求服务完成后（set_reply）在此
+                                      // 等待 memory_partition_unit 取走送回 SM；
+                                      // 注释是旧版多时钟设计的遗留说法，本代码库单时钟
 
-  unsigned int dram_util_bins[10];
-  unsigned int dram_eff_bins[10];
-  unsigned int last_n_cmd, last_n_activity, last_bwutil;
+  // ============ DRAM 利用率分桶（visualizer 画时间分布用） ============
+  unsigned int dram_util_bins[10];   // 总线利用率直方图：按利用率 0~100% 分 10 桶统计周期数
+  unsigned int dram_eff_bins[10];    // 有效带宽直方图：排除行命令开销后的有效利用率分桶
+  unsigned int last_n_cmd,           // 上一统计窗口的命令数快照
+               last_n_activity,      // 上一窗口的活动周期数快照
+               last_bwutil;          // 上一窗口的带宽利用率快照（供 visualizer 算增量）
 
-  unsigned long long n_cmd;
-  unsigned long long n_activity;
-  unsigned long long n_nop;
-  unsigned long long n_act;
-  unsigned long long n_pre;
-  unsigned long long n_ref;
-  unsigned long long n_rd;
-  unsigned long long n_rd_L2_A;
-  unsigned long long n_wr;
-  unsigned long long n_wr_WB;
-  unsigned long long n_req;
-  unsigned long long max_mrqs_temp;
+  // ============ 命令计数（print_stat 的核心输出） ============
+  unsigned long long n_cmd;          // 发出的命令总数（行+列，含 NOP 之外的）
+  unsigned long long n_activity;     // 总线有数据传输的活动周期数
+  unsigned long long n_nop;          // 被迫发 NOP（无命令可发）的周期数
+  unsigned long long n_act;          // ACT（行激活）命令数
+  unsigned long long n_pre;          // PRE（预充电）命令数
+  unsigned long long n_ref;          // REF（刷新）命令数
+  unsigned long long n_rd;           // RD（读）命令数
+  unsigned long long n_rd_L2_A;      // 其中来自 L2 access（非 fill/writeback）的读数
+  unsigned long long n_wr;           // WR（写）命令数
+  unsigned long long n_wr_WB;        // 其中 writeback 类型的写数
+  unsigned long long n_req;          // 进入本 channel 的请求总数（= push 次数）
+  unsigned long long max_mrqs_temp;  // 本统计窗口内 mrqq 长度的峰值（临时变量，打印后清零）
 
   // some statistics to see where BW is wasted?
-  unsigned long long wasted_bw_row;
-  unsigned long long wasted_bw_col;
-  unsigned long long util_bw;
-  unsigned long long idle_bw;
-  unsigned long long RCDc_limit;
-  unsigned long long CCDLc_limit;
-  unsigned long long CCDLc_limit_alone;
-  unsigned long long CCDc_limit;
-  unsigned long long WTRc_limit;
-  unsigned long long WTRc_limit_alone;
-  unsigned long long RCDWRc_limit;
-  unsigned long long RTWc_limit;
-  unsigned long long RTWc_limit_alone;
-  unsigned long long rwq_limit;
+  // ============ 带宽浪费归因：因某时序约束阻塞而空转的周期数 ============
+  unsigned long long wasted_bw_row;    // 行命令（ACT/PRE）占用总线损失的带宽
+  unsigned long long wasted_bw_col;    // 读写转向等限制损失的列数据带宽
+  unsigned long long util_bw;          // 有效数据传输带宽（实际传数据的周期累计）
+  unsigned long long idle_bw;          // 总线完全空闲损失的带宽
+  unsigned long long RCDc_limit;       // 因 tRCD（行激活→列命令延迟）阻塞的空转周期
+  unsigned long long CCDLc_limit;      // 因 tCCD_L（同 bank group 列命令间隔）阻塞的周期
+  unsigned long long CCDLc_limit_alone;// 仅由 tCCD_L 单独造成阻塞的周期（归因去重）
+  unsigned long long CCDc_limit;       // 因 tCCD 阻塞的空转周期
+  unsigned long long WTRc_limit;       // 因 tWTR（写→读转向）阻塞的空转周期
+  unsigned long long WTRc_limit_alone; // 仅由 tWTR 单独造成阻塞的周期
+  unsigned long long RCDWRc_limit;     // 因 tRCDWR（读改写延迟）阻塞的空转周期
+  unsigned long long RTWc_limit;       // 因 tRTW（读→写转向）阻塞的空转周期
+  unsigned long long RTWc_limit_alone; // 仅由 tRTW 单独造成阻塞的周期
+  unsigned long long rwq_limit;        // 因 rwq 满无法发列命令的次数
 
   // row locality, BLP and other statistics
-  unsigned long long access_num;
-  unsigned long long read_num;
-  unsigned long long write_num;
-  unsigned long long hits_num;
-  unsigned long long hits_read_num;
-  unsigned long long hits_write_num;
-  unsigned long long banks_1time;
-  unsigned long long banks_acess_total;
-  unsigned long long banks_acess_total_after;
-  unsigned long long banks_time_rw;
-  unsigned long long banks_access_rw_total;
-  unsigned long long banks_time_ready;
-  unsigned long long banks_access_ready_total;
-  unsigned long long issued_two;
-  unsigned long long issued_total;
-  unsigned long long issued_total_row;
-  unsigned long long issued_total_col;
-  unsigned long long last_cmd_cycle;
-  unsigned long long last_col_cycle;
-  unsigned long long last_read_col_cycle;
-  unsigned long long last_write_col_cycle;
-  unsigned long long last_row_cycle;
-  double write_to_read_ratio_blp_rw_average;
-  unsigned long long bkgrp_parallsim_rw;
+  // ============ 行局部性、bank 级并行度（BLP）与其他统计 ============
+  unsigned long long access_num;         // 发射命令总数（行命中率的分母）
+  unsigned long long read_num;           // 读命令总数
+  unsigned long long write_num;          // 写命令总数
+  unsigned long long hits_num;           // 行命中次数（ACT 时目标行已打开）
+  unsigned long long hits_read_num;      // 行命中的读命令数
+  unsigned long long hits_write_num;     // 行命中的写命令数
+  unsigned long long banks_1time;        // 单周期并行访问 bank 数的峰值（BLP 上限）
+  unsigned long long banks_acess_total;  // 各周期并行访问 bank 数累加（[typo: ac cess]）
+  unsigned long long banks_acess_total_after;  // 激活后口径的并行 bank 数累加（row locality 折损分析）
+  unsigned long long banks_time_rw;      // 有读写活动（列命令）的周期数
+  unsigned long long banks_access_rw_total;    // 读写周期内的并行 bank 数累加
+  unsigned long long banks_time_ready;   // 存在 bank 可被服务（无阻塞）的周期数
+  unsigned long long banks_access_ready_total; // 就绪周期内可服务 bank 数累加
+  unsigned long long issued_two;         // 同一周期发射 2 条命令的周期数
+  unsigned long long issued_total;       // 发射命令总次数
+  unsigned long long issued_total_row;   // 行命令（ACT/PRE）发射总数
+  unsigned long long issued_total_col;   // 列命令（RD/WR）发射总数
+  unsigned long long last_cmd_cycle;     // 上次发射任意命令的全局周期（算 idle 间隔用）
+  unsigned long long last_col_cycle;     // 上次发射列命令的周期
+  unsigned long long last_read_col_cycle;// 上次发射读命令的周期
+  unsigned long long last_write_col_cycle;// 上次发射写命令的周期
+  unsigned long long last_row_cycle;     // 上次发射行命令的周期
+  double write_to_read_ratio_blp_rw_average;  // 读写混合流下按写读比加权的 BLP 平均值
+  unsigned long long bkgrp_parallsim_rw; // 读写操作时 bank group 并行度统计
 
-  unsigned int bwutil;
-  unsigned int max_mrqs;
-  unsigned int ave_mrqs;
+  unsigned int bwutil;        // 本窗口总线利用率（n_activity/n_cmd，% 整数）
+  unsigned int max_mrqs;      // mrqq 历史最大长度
+  unsigned int ave_mrqs;      // mrqq 长度累加和（最后除以 n_cmd 得平均值）
 
-  class frfcfs_scheduler *m_frfcfs_scheduler;
+  class frfcfs_scheduler *m_frfcfs_scheduler;  // FR-FCFS 调度器（仅当 scheduler_type ==
+                                               // DRAM_FRFCFS 时创建；FIFO 模式为 NULL）。
+                                               // 持有独立的读写挂起队列，是 dram_t 的唯一协作者
 
-  unsigned int n_cmd_partial;
-  unsigned int n_activity_partial;
-  unsigned int n_nop_partial;
-  unsigned int n_act_partial;
-  unsigned int n_pre_partial;
-  unsigned int n_req_partial;
-  unsigned int ave_mrqs_partial;
-  unsigned int bwutil_partial;
+  // ============ visualizer 周期窗口统计（每窗口打印后清零） ============
+  unsigned int n_cmd_partial;       // 本窗口命令数
+  unsigned int n_activity_partial;  // 本窗口活动周期数
+  unsigned int n_nop_partial;       // 本窗口 NOP 数
+  unsigned int n_act_partial;       // 本窗口 ACT 数
+  unsigned int n_pre_partial;       // 本窗口 PRE 数
+  unsigned int n_req_partial;       // 本窗口请求数
+  unsigned int ave_mrqs_partial;    // 本窗口 mrqq 长度累加
+  unsigned int bwutil_partial;      // 本窗口带宽利用率
 
-  memory_stats_manager_t *m_mem_stats;
-  class Stats *mrqq_Dist;  // memory request queue inside DRAM
+  memory_stats_manager_t *m_mem_stats;  // 访存延迟统计管理器（最终输出到统计文件）
+  class Stats *mrqq_Dist;   // memory request queue inside DRAM
+                            // mrqq 长度的分布直方图（StatCreate 创建，上限 = queue_limit()）
 
-  friend class frfcfs_scheduler;
+  friend class frfcfs_scheduler;  // 友元声明：允许 frfcfs_scheduler 直接访问 dram_t 的
+                                  // 私有成员（bank 数组、bkgrp、rwq 等），
+                                  // 否则调度器每次决策都要过一遍 public 接口
 };
 
 #endif /*DRAM_H*/

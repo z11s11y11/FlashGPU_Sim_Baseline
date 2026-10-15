@@ -50,55 +50,56 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
                memory_stats_manager_t *stats,
                memory_partition_unit *mp,
                gpgpu_sim *gpu) {
-  id = partition_id;
-  m_memory_partition_unit = mp;
-  m_mem_stats = stats;
-  m_config = config;
-  m_gpu = gpu;
 
-  // rowblp
-  access_num = 0;
-  hits_num = 0;
-  read_num = 0;
-  write_num = 0;
-  hits_read_num = 0;
-  hits_write_num = 0;
-  banks_1time = 0;
-  banks_acess_total = 0;
-  banks_acess_total_after = 0;
-  banks_time_ready = 0;
-  banks_access_ready_total = 0;
-  issued_two = 0;
-  issued_total = 0;
-  issued_total_row = 0;
-  issued_total_col = 0;
-  last_cmd_cycle = 0;
-  last_col_cycle = 0;
-  last_read_col_cycle = 0;
-  last_write_col_cycle = 0;
-  last_row_cycle = 0;
+  id = partition_id;                       // 本 DRAM channel（memory partition）编号
+  m_memory_partition_unit = mp;            // 所属 memory_partition_unit（上游 L2，写回经它 set_done）
+  m_mem_stats = stats;                     // 访存延迟统计管理器（统计文件输出用）
+  m_config = config;                       // DRAM/HBM 配置（时序参数、bank 数等，源自 gpgpusim.config）
+  m_gpu = gpu;                             // 所属 GPU（目前仅用于取全局周期做时间戳，解耦时要去掉）
 
-  CCDc = 0;
-  RRDc = 0;
-  RTWc = 0;
-  WTRc = 0;
+  // rowblp：行局部性（row locality）与 bank 级并行度（BLP）统计
+  access_num = 0;                          // 已发射命令总数（ACT + RD/WR，行命中率的分子分母）
+  hits_num = 0;                            // 行命中次数（ACT 时目标行恰好已打开）
+  read_num = 0;                            // 读命令（RD）发射总数
+  write_num = 0;                           // 写命令（WR）发射总数
+  hits_read_num = 0;                       // 行命中的读命令数
+  hits_write_num = 0;                      // 行命中的写命令数
+  banks_1time = 0;                         // 单周期并行访问 bank 数的峰值（观测到的 BLP 上限）
+  banks_acess_total = 0;                   // 各周期并行访问 bank 数的累加和（BLP 平均值分子）
+  banks_acess_total_after = 0;             // 激活后口径的并行 bank 数累加（row locality 折损分析）
+  banks_time_ready = 0;                    // 存在 bank 被访问的周期数（BLP 平均值分母）
+  banks_access_ready_total = 0;            // 处于可服务状态（无阻塞计数器）的 bank 数累加
+  issued_two = 0;                          // 同一周期发射 2 条命令的周期数
+  issued_total = 0;                        // 发射命令总次数
+  issued_total_row = 0;                    // 行命令（ACT/PRE）发射总数
+  issued_total_col = 0;                    // 列命令（RD/WR）发射总数
+  last_cmd_cycle = 0;                      // 上次发射任意命令的全局周期（算总线利用率用）
+  last_col_cycle = 0;                      // 上次发射列命令的全局周期
+  last_read_col_cycle = 0;                 // 上次发射读命令的全局周期
+  last_write_col_cycle = 0;                // 上次发射写命令的全局周期
+  last_row_cycle = 0;                      // 上次发射行命令的全局周期
 
-  wasted_bw_row = 0;
-  wasted_bw_col = 0;
-  util_bw = 0;
-  idle_bw = 0;
-  RCDc_limit = 0;
-  CCDLc_limit = 0;
-  CCDLc_limit_alone = 0;
-  CCDc_limit = 0;
-  WTRc_limit = 0;
-  WTRc_limit_alone = 0;
-  RCDWRc_limit = 0;
-  RTWc_limit = 0;
-  RTWc_limit_alone = 0;
-  rwq_limit = 0;
-  write_to_read_ratio_blp_rw_average = 0;
-  bkgrp_parallsim_rw = 0;
+  CCDc = 0;                                // tCCD 计数器：列命令最小间隔，倒数到 0 才能发下一条列命令
+  RRDc = 0;                                // tRRD 计数器：ACT-ACT 最小间隔（跨 bank）
+  RTWc = 0;                                // tRTW 计数器：读→写总线转向惩罚（channel 级，跨 bank 共享）
+  WTRc = 0;                                // tWTR 计数器：写→读总线转向惩罚（channel 级，跨 bank 共享）
+
+  wasted_bw_row = 0;                       // 因发 ACT/PRE 占用总线而损失的带宽
+  wasted_bw_col = 0;                       // 因读写转向等时序限制损失的列数据传输带宽
+  util_bw = 0;                             // 有效数据传输带宽（实际传数据的周期累计）
+  idle_bw = 0;                             // 总线完全空闲损失的带宽
+  RCDc_limit = 0;                          // 因 tRCD（行激活延迟）阻塞导致总线空转的周期数
+  CCDLc_limit = 0;                         // 因 tCCD_L（同 bank group 列命令间隔）阻塞的周期数
+  CCDLc_limit_alone = 0;                   // 仅由 tCCD_L 单独造成阻塞的周期数（与其他约束归因去重）
+  CCDc_limit = 0;                          // 因 tCCD 阻塞导致空转的周期数
+  WTRc_limit = 0;                          // 因 tWTR 阻塞导致空转的周期数
+  WTRc_limit_alone = 0;                    // 仅由 tWTR 单独造成阻塞的周期数
+  RCDWRc_limit = 0;                        // 因 tRCDWR（读改写延迟）阻塞导致空转的周期数
+  RTWc_limit = 0;                          // 因 tRTW 阻塞导致空转的周期数
+  RTWc_limit_alone = 0;                    // 仅由 tRTW 单独造成阻塞的周期数
+  rwq_limit = 0;                           // 因 rwq（数据总线队列）满而无法发射列命令的次数
+  write_to_read_ratio_blp_rw_average = 0;  // 读写混合流下按写读比加权的 BLP 平均值
+  bkgrp_parallsim_rw = 0;                  // 读写操作时的 bank group 并行度统计
 
   rw = READ;  // read mode is default
 
@@ -221,15 +222,16 @@ unsigned int dram_t::queue_limit() const {
 dram_req_t::dram_req_t(class mem_fetch *mf, unsigned banks,
                        unsigned dram_bnk_indexing_policy,
                        class gpgpu_sim *gpu) {
-  txbytes = 0;
-  dqbytes = 0;
-  data = mf;
-  m_gpu = gpu;
+  txbytes = 0; // 已传输字节数：每完成一个 burst 累加 atom_size，达到 nbytes 即服务完成
+  dqbytes = 0; // 本周期数据总线已占用字节数：统计/限流用，防止一个周期超额占线
+  data = mf; // 原始请求指针：关联的 mem_fetch（含 SM 来源、TLB 等信息）
+  m_gpu = gpu; // 所属 GPU 指针：目前仅用于取全局周期，解耦时应移除
 
   const addrdec_t &tlx = mf->get_tlx_addr();
 
   switch (dram_bnk_indexing_policy) {
     case LINEAR_BK_INDEX: {
+      // // bank 编号：请求落在本 channel 内 16 个 bank 中的哪一个
       bk = tlx.bk;
       break;
     }
@@ -258,13 +260,17 @@ dram_req_t::dram_req_t(class mem_fetch *mf, unsigned banks,
       break;
   }
 
-  row = tlx.row;
-  col = tlx.col;
-  nbytes = mf->get_data_size();
+  row = tlx.row; // 目标行地址：请求要访问的 DRAM row（页），ACT 命令打开的对象
+  col = tlx.col; // 列地址：row 内的起始 burst 位置，RD/WR 命令的寻址字段
+  nbytes = mf->get_data_size(); // 待传输总字节数：本次请求需要搬完的数据量（= access size）
 
+  // 进入 DRAM 的时刻（全局周期）：算 queuing latency 的起点
   timestamp = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+  // 原始物理地址：请求的完整地址，用于统计与调试回溯
   addr = mf->get_addr();
+  // 入队时刻：进入 mrqq/调度队列的周期，算调度等待时间
   insertion_time = (unsigned)m_gpu->gpu_sim_cycle;
+  // 读写标志：1 = 读请求（要返回数据），0 = 写请求
   rw = data->get_is_write() ? WRITE : READ;
 }
 
