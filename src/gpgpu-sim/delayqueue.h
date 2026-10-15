@@ -75,6 +75,7 @@ class fifo_pipeline {
         m_n_element++;
       }
     } else {
+      // 第一个元素
       m_head = m_tail = new fifo_data<T>();
       m_length++;
       m_n_element++;

@@ -74,6 +74,7 @@ class OptionRegistry : public OptionRegistryInterface {
 
   virtual ~OptionRegistry() {}
 
+  // 把选项变量的当前值转成字符串返回
   virtual string toString() {
     stringstream ss;
     ss << m_variable;
@@ -86,11 +87,11 @@ class OptionRegistry : public OptionRegistryInterface {
     ss << setbase(10);
     if (str.size() > 1 && str[0] == '0') {
       if (str.size() > 2 && str[1] == 'x') {
-        ss.ignore(2);
-        ss << setbase(16);
+        ss.ignore(2);   // 跳过 "0x" 两个字符
+        ss << setbase(16);  // 后续按十六进制读
       } else {
-        ss.ignore(1);
-        ss << setbase(8);
+        ss.ignore(1);   // 跳过前导 '0'
+        ss << setbase(8); // 后续按八进制读
       }
     }
     try {
@@ -339,6 +340,7 @@ class OptionParser {
     }
   }
 
+  // 存储 **`OptionRegistryInterface` 指针** 的链表
  private:
   typedef list<OptionRegistryInterface *> OptionCollection;
   OptionCollection m_optionReg;

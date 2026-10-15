@@ -219,6 +219,8 @@ struct power_config {
   double gpu_min_inc_per_active_sm;
 };
 
+// memory_config 类的定义
+
 class memory_config {
  public:
   memory_config(gpgpu_context *ctx) {
@@ -227,14 +229,20 @@ class memory_config {
     gpgpu_L2_queue_config = NULL;
     gpgpu_ctx = ctx;
   }
+  // 初始化
   void init() {
     assert(gpgpu_dram_timing_opt);
+    
+    //  strchr 是 C 标准库 <string.h> 里的字符串查找函数，名字可以理解为 
+    // string character，用来在一个字符串中查找某个字符第一次出现的位置
     if (strchr(gpgpu_dram_timing_opt, '=') == NULL) {
       // dram timing option in ordered variables (legacy)
       // Disabling bank groups if their values are not specified
       nbkgrp = 1;
       tCCDL = 0;
       tRTPL = 0;
+      // 第一个参数 gpgpu_dram_timing_opt 要解析的字符串
+      // 参数定义在FlashGPU_Sim_Baseline/configs/SM90_H100/gpgpusim.config中
       sscanf(gpgpu_dram_timing_opt, "%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d",
              &nbk, &tCCD, &tRRD, &tRCD, &tRAS, &tRP, &tRC, &CL, &WL, &tCDLR,
              &tWR, &nbkgrp, &tCCDL, &tRTPL);

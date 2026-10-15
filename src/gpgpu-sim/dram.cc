@@ -123,6 +123,16 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
 
   rwq = new fifo_pipeline<dram_req_t>("rwq", m_config->CL, m_config->CL + 1);
   mrqq = new fifo_pipeline<dram_req_t>("mrqq", 0, 2);
+
+  // returnq的定义
+  /*
+  fifo_pipeline 定义在 src/gpgpu-sim/delayqueue.h 里
+
+  ····"dramreturnq" 队列的名字字符串，只用于调试打印
+  ····0 —— 最小驻留延迟（min_len）fifo_pipeline 不只是个普通 FIFO，它内置了"延迟流水线"语义：元素必须在里面待满 min_len 拍才允许出队。
+  ····容量 配置项 -gpgpu_dram_return_queue_size 配了值就用配置值；配 0 时不是"无限"，而是回落到 1024
+
+  */
   returnq = new fifo_pipeline<mem_fetch>(
       "dramreturnq", 0,
       m_config->gpgpu_dram_return_queue_size == 0
@@ -169,14 +179,22 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
 
 bool dram_t::full(bool is_write) const {
   if (m_config->scheduler_type == DRAM_FRFCFS) {
-    if (m_config->gpgpu_frfcfs_dram_sched_queue_size == 0) return false;
+    if (m_config->gpgpu_frfcfs_dram_sched_queue_size == 0) return false; //无限队列
+    
+    // 读写分队列
     if (m_config->seperate_write_queue_enabled) {
+      // 如果是写
       if (is_write)
         return m_frfcfs_scheduler->num_write_pending() >=
                m_config->gpgpu_frfcfs_dram_write_queue_size;
+        // gpgpu_frfcfs_dram_write_queue_size 是 memory_config 里的一个配置参数，
+        // 定义在 gpu-sim.h、解析在 gpu-sim.cc
+        // 作用是：限制调度器里独立的写队列最多能积压多少个写请求
+
       else
         return m_frfcfs_scheduler->num_pending() >=
                m_config->gpgpu_frfcfs_dram_sched_queue_size;
+        // 读队列 容量上限由 gpgpu_frfcfs_dram_sched_queue_size 控制
     } else
       return m_frfcfs_scheduler->num_pending() >=
              m_config->gpgpu_frfcfs_dram_sched_queue_size;

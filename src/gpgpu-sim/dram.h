@@ -117,7 +117,10 @@ class dram_t {
          memory_stats_manager_t *stats, class memory_partition_unit *mp,
          class gpgpu_sim *gpu);
 
+  // 判断 DRAM channel 还能不能接收新请求，是调用方决定是否 throttle 的开关
   bool full(bool is_write) const;
+
+
   void print(FILE *simFile) const;
   void visualize() const;
   void print_stat(FILE *simFile);
@@ -126,6 +129,7 @@ class dram_t {
   unsigned int queue_limit() const;
   void visualizer_print(gzFile visualizer_file);
 
+  // 这两行是 dram_t 的响应出口，负责把已经服务完的读请求交还给上层
   class mem_fetch *return_queue_pop();
   class mem_fetch *return_queue_top();
 
