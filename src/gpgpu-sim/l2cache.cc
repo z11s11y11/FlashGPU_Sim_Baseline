@@ -223,7 +223,7 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
                                              const memory_config *config,
                                              memory_stats_manager_t *stats,
                                              class gpgpu_sim *gpu)
-    : : m_id(partition_id),              // 本 partition 编号（= DRAM channel 号，与内部
+    : m_id(partition_id),              // 本 partition 编号（= DRAM channel 号，与内部
                                    // dram_t::id 一致；0 ~ gpgpu_n_mem-1）
       m_config(config),            // 全局内存配置指针（memory_config：DRAM 时序、
                                    // L2 参数、地址映射等，源自 gpgpusim.config；
@@ -390,12 +390,17 @@ int memory_partition_unit::global_sub_partition_id_to_local_id(
 void memory_partition_unit::simple_dram_model_cycle() {
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
+  // ① 出口：延迟队列里到期的请求 → 送回 sub-partition 的 dram_L2 队列（读）或 set_done（写回）
   if (!m_dram_latency_queue.empty() &&
       ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >=
        m_dram_latency_queue.front().ready_cycle)) {
     mem_fetch *mf_return = m_dram_latency_queue.front().req;
     if (mf_return->get_access_type() != L1_WRBK_ACC &&
         mf_return->get_access_type() != L2_WRBK_ACC) {
+          // 普通读/写	SM 的 warp 指令
+
+
+      // 把这条请求从"请求"翻牌成"响应"，函数定义在/src/gpgpu-sim/mem_fetch.h
       mf_return->set_reply();
 
       unsigned dest_global_spid = mf_return->get_sub_partition_id();
@@ -419,6 +424,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
       }
 
     } else {
+      // cache  eviction 时把脏数据吐回内存（L1 写回走 L2，L2 写回走 DRAM）。关键特征：发起方是缓存本身
       this->set_done(mf_return);
       delete mf_return;
       m_dram_latency_queue.pop_front();
@@ -429,6 +435,7 @@ void memory_partition_unit::simple_dram_model_cycle() {
   // if( !m_dram->full(mf->is_write()) ) {
   // L2->DRAM queue to DRAM latency queue
   // Arbitrate among multiple L2 subpartitions
+   // ② 入口：仲裁各 sub-partition 的 L2_dram 队列 → 进延迟队列，ready_cycle = 当前周期 + dram_latency
   int last_issued_partition = m_arbitration_metadata.last_borrower();
   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
        p++) {
@@ -459,9 +466,12 @@ void memory_partition_unit::simple_dram_model_cycle() {
   //}
 }
 
+// memory_partition_unit::dram_cycle() 是 L2 世界和 DRAM 世界之间的"海关"
 void memory_partition_unit::dram_cycle() {
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
+
+  // 从 DRAM 控制器中取出已经完成访问的 mem_fetch（return_queue_top 只看不取）
   mem_fetch *mf_return = m_dram->return_queue_top();
   if (mf_return) {
     unsigned dest_global_spid = mf_return->get_sub_partition_id();
@@ -486,6 +496,7 @@ void memory_partition_unit::dram_cycle() {
     m_dram->return_queue_pop();
   }
 
+  // DRAM 控制器推进一拍
   m_dram->cycle();
   m_dram->dram_log(SAMPLELOG);
 
@@ -493,6 +504,8 @@ void memory_partition_unit::dram_cycle() {
   // if( !m_dram->full(mf->is_write()) ) {
   // L2->DRAM queue to DRAM latency queue
   // Arbitrate among multiple L2 subpartitions
+
+  // 从上一个获得服务的子分区之后开始轮询（round-robin），实现公平仲裁，避免某个子分区长期占用 DRAM。
   int last_issued_partition = m_arbitration_metadata.last_borrower();
   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
        p++) {
@@ -521,12 +534,15 @@ void memory_partition_unit::dram_cycle() {
   //}
 
   // DRAM latency queue
+  // 这是建模DRAM 访问延迟的关键结构：请求不是立刻进 DRAM，而是先在此"等够 dram_latency 个周期"
   if (!m_dram_latency_queue.empty() &&
       ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >=
        m_dram_latency_queue.front().ready_cycle) &&
       !m_dram->full(m_dram_latency_queue.front().req->is_write())) {
+    // 从dram_latency_queue队列取出来一个请求，放入dram controller
     mem_fetch *mf = m_dram_latency_queue.front().req;
     m_dram_latency_queue.pop_front();
+    // 这个push函数还是比较关键的，在dram.cc的dram_t::push()中被定义，涉及mem_fetch事件到dram事件的打包行为
     m_dram->push(mf);
   }
 }

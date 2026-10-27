@@ -62,6 +62,7 @@ class mem_fetch {
   ~mem_fetch();
 
   void set_status(enum mem_fetch_status status, unsigned long long cycle);
+  // void set_reply()的函数实现
   void set_reply() {
     assert(m_access.get_type() != L1_WRBK_ACC &&
            m_access.get_type() != L2_WRBK_ACC);

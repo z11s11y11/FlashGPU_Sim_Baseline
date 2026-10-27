@@ -312,7 +312,7 @@ void memory_config::reg_options(class OptionParser *opp) {
       "Burst length of each DRAM request (default = 4 data bus cycle)", "4");
   option_parser_register(opp, "-dram_data_command_freq_ratio", OPT_UINT32,
                          &data_command_freq_ratio,
-                         "Frequency ratio between DRAM data bus and command "
+                         "Frequency ratio between DRAM if (clock_mask & DRAM && !gem5_integrated)data bus and command "
                          "bus (default = 2 times, i.e. DDR)",
                          "2");
   option_parser_register(
@@ -2494,6 +2494,7 @@ void gpgpu_sim::aggregate_cluster_stats() {
   m_mem_stats->aggregate_stats();
 }
 
+// gpgpu_sim::cycle() 是整个 GPU 仿真器的顶层"心跳函数"——仿真主循环里每迭代一次就调它一次，它负责把 GPU 的所有部件按各自的时钟节奏往前推一拍。
 void gpgpu_sim::cycle() {
   int clock_mask = next_clock_domain();
 

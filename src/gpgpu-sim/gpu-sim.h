@@ -224,10 +224,19 @@ struct power_config {
 class memory_config {
  public:
   memory_config(gpgpu_context *ctx) {
-    m_valid = false;
-    gpgpu_dram_timing_opt = NULL;
-    gpgpu_L2_queue_config = NULL;
-    gpgpu_ctx = ctx;
+    m_valid = false;                    // 配置有效性标志：init() 成功解析完所有参数后置 true；
+                                        // 为 false 时说明配置不可用（如 DRAM 时序串缺失），
+                                        // 使用方应拒绝启动
+    gpgpu_dram_timing_opt = NULL;       // DRAM 时序字符串指针：此时还没注册/解析选项，
+                                        // 置 NULL；reg_options() 注册后若配置给了值，
+                                        // 由 option parser 分配内存写入（你之前问过的
+                                        // sscanf 解析的正是它）
+    gpgpu_L2_queue_config = NULL;       // L2 队列配置文件名指针：对应 -gpgpu_L2_queue_config
+                                        // 选项，指向一个单独文件（里面定义 L2 MSHR、
+                                        // 数据/填充队列深度等），NULL 表示用代码内默认值
+    gpgpu_ctx = ctx;                    // 全局上下文指针：gpgpu_context 贯穿整个模拟器
+                                        // （持有配置、统计、打印接口等），这里存一份
+                                        // 供本类内部使用（如 debug 输出走统一的 ctx 接口）
   }
   // 初始化
   void init() {

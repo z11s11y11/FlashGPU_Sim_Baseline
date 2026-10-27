@@ -122,6 +122,7 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
   }
   prio = 0;
 
+  // req的定义
   rwq = new fifo_pipeline<dram_req_t>("rwq", m_config->CL, m_config->CL + 1);
   mrqq = new fifo_pipeline<dram_req_t>("mrqq", 0, 2);
 
@@ -277,7 +278,8 @@ dram_req_t::dram_req_t(class mem_fetch *mf, unsigned banks,
 void dram_t::push(class mem_fetch *data) {
   assert(id == data->get_tlx_addr()
                    .chip);  // Ensure request is in correct memory partition
-
+  
+                   // 打包一下，从mem_fetch包变成dram_req_t包
   dram_req_t *mrq =
       new dram_req_t(data, m_config->nbk, m_config->dram_bnk_indexing_policy,
                      m_memory_partition_unit->get_mgpu());
@@ -319,13 +321,16 @@ void dram_t::scheduler_fifo() {
   a ^= b;
 
 void dram_t::cycle() {
+  // 先看 returnq 有没有空位，有才允许 rwq 出队——这是背压：返回路径堵了，DRAM 数据总线侧就得停住。
   if (!returnq->full()) {
     dram_req_t *cmd = rwq->pop();
+    // 熬过了延迟
     if (cmd) {
 #ifdef DRAM_VIEWCMD
       printf("\tDQ: BK%d Row:%03x Col:%03x", cmd->bk, cmd->row,
              cmd->col + cmd->dqbytes);
 #endif
+// cmd->dqbytes —— 这条请求已经在数据总线上累计传输的字节数（dq = data queue）。初值 0，每传一个 burst 往上累加
       cmd->dqbytes += m_config->dram_atom_size;
 
       if (cmd->dqbytes >= cmd->nbytes) {

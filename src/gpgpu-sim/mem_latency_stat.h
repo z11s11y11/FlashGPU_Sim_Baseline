@@ -141,6 +141,9 @@ class memory_stats_t {
   unsigned total_n_writes;
 };
 
+// memory_stats_manager_t 是一个为 memory_stats_t 对象提供线程安全管理的"统计管理器"，
+// 它是这个 FlashGPU Sim（基于 OpenMP 并行化的 GPGPU-Sim 分支）相对原版 GPGPU-Sim 
+// 新增的一层封装。
 // Provide a thread-safe manager for memory_stats_t objects.
 class memory_stats_manager_t {
 public:

@@ -52,6 +52,7 @@
 
 class memory_stats_manager_t;
 
+// dram_req_t 的构造函数
 class dram_req_t {
  public:
   dram_req_t(class mem_fetch *data, unsigned banks,
@@ -193,9 +194,13 @@ class dram_t {
   unsigned int pending_writes;  // 等待中的写请求数（进入 WRITE_MODE 排水的判断依据之一）
 
   // ============ 核心数据队列 ============
+  // 请求流向：push() → mrqq → 调度器 → bank 挂起(mrq) → issue 发射 RD/WR → rwq → returnq
+
+  // rwq = Read/Write Queue（读写队列）——dram.h 注释里叫它"数据总线队列"。
   fifo_pipeline<dram_req_t> *rwq;   // 数据总线队列：已发 RD/WR 命令在此等待固定延迟
                                     // （min_len = CL），模拟 burst 在总线上的传输耗时，
                                     // 弹出时累加 txbytes，传完进入 returnq
+  // mrqq = Memory ReQuest Queue（内存请求队列）——dram.h 注释里叫它"MC 入口队列
   fifo_pipeline<dram_req_t> *mrqq;  // MC 入口队列：push() 放入的新请求先在此排队，
                                     // 深度仅 2，随后被调度器（FIFO/FR-FCFS）取走分发到各 bank
   // buffer to hold packets when DRAM processing is over
